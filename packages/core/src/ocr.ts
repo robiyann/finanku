@@ -101,8 +101,29 @@ Format output JSON valid (tanpa pembungkus markdown):
       throw new Error('AI Vision mengembalikan respon kosong.');
     }
 
-    const cleanedContent = content.replace(/^```json\s*/i, '').replace(/```$/, '').trim();
-    const json = JSON.parse(cleanedContent);
+    let json: any;
+    try {
+      json = JSON.parse(content);
+    } catch {
+      const codeBlockMatch = content.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+      if (codeBlockMatch && codeBlockMatch[1]) {
+        try {
+          json = JSON.parse(codeBlockMatch[1].trim());
+        } catch {}
+      }
+      if (!json) {
+        const jsonObjectMatch = content.match(/\{[\s\S]*\}/);
+        if (jsonObjectMatch) {
+          try {
+            json = JSON.parse(jsonObjectMatch[0].trim());
+          } catch {}
+        }
+      }
+    }
+
+    if (!json) {
+      throw new Error('Gambar yang diunggah tidak dapat diekstraksi. Mohon pastikan foto nota terlihat jelas dan dapat dibaca.');
+    }
 
     // Check if AI explicitly marked it as non-receipt
     if (json.is_receipt === false) {
