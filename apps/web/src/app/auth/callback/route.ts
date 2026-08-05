@@ -3,11 +3,18 @@ import { getDb } from '@/lib/db';
 import { createSessionToken, getSessionCookieConfig } from '@/lib/session';
 
 export async function GET(request: Request) {
-  const { searchParams, origin } = new URL(request.url);
+  const { searchParams } = new URL(request.url);
+  
+  // Fix: Use proper origin detection with forwarded headers
+  const host = request.headers.get('host') || 
+               request.headers.get('x-forwarded-host') || 
+               'localhost:3000';
+  const proto = request.headers.get('x-forwarded-proto') || 'https';
+  const origin = `${proto}://${host.split(':')[0]}`;
+
   const code = searchParams.get('code');
 
-  // Security: Validate 'next' param — hanya izinkan path internal
-  // Mencegah open redirect attack (e.g., ?next=//evil.com atau ?next=https://phishing.com)
+  // Security: Validate 'next' param — only allow internal paths
   const rawNext = searchParams.get('next') ?? '/';
   const next = rawNext.startsWith('/') && !rawNext.startsWith('//') && !rawNext.includes('://') 
     ? rawNext 
@@ -60,13 +67,11 @@ export async function GET(request: Request) {
     let isNewUser = false;
 
     try {
-      // Check if user already exists
       const existingUsers = await sql`
         SELECT id FROM public.users WHERE email = ${googleUser.email} LIMIT 1;
       `;
 
       if (existingUsers && existingUsers.length > 0) {
-        // Existing user — update profile info
         userId = existingUsers[0].id;
         await sql`
           UPDATE public.users SET
@@ -77,7 +82,6 @@ export async function GET(request: Request) {
           WHERE id = ${userId}::uuid;
         `;
       } else {
-        // New user — insert record
         isNewUser = true;
         const rows = await sql`
           INSERT INTO public.users (google_id, email, display_name, avatar_url)
@@ -92,7 +96,7 @@ export async function GET(request: Request) {
       console.error('[Auth Callback] Neon DB Upsert Error:', dbErr);
     }
 
-    // 4. Auto-create default "Cash" account for new users
+    // Auto-create default "Cash" account for new users
     if (isNewUser && userId) {
       try {
         await sql`
@@ -106,8 +110,16 @@ export async function GET(request: Request) {
       }
     }
 
+    // CRITICAL FIX: If DB failed upsert (userId empty), DO NOT fallback to googleUser.id
+    // because googleUser.id is a numeric Google ID, NOT UUID.
+    // Fallback to number will corrupt session and cause all queries
+    // "WHERE user_id = ${user.id}::uuid" to fail with "invalid input syntax for type uuid".
+    if (!userId) {
+      throw new Error('Gagal membuat atau menemukan akun di database. Silakan coba login lagi.');
+    }
+
     const sessionUser = {
-      id: userId || googleUser.id,
+      id: userId,
       email: googleUser.email,
       name: googleUser.name,
       avatar: googleUser.picture,
