@@ -11,6 +11,59 @@ interface ReceiptUploadModalProps {
   currency: string;
 }
 
+async function compressImageForOcr(file: File, maxDimension = 1200, quality = 0.82): Promise<File> {
+  return new Promise((resolve) => {
+    if (file.size < 300 * 1024) {
+      resolve(file);
+      return;
+    }
+    const img = new Image();
+    const objectUrl = URL.createObjectURL(file);
+    img.src = objectUrl;
+    img.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      let { width, height } = img;
+      if (width > maxDimension || height > maxDimension) {
+        if (width > height) {
+          height = Math.round((height * maxDimension) / width);
+          width = maxDimension;
+        } else {
+          width = Math.round((width * maxDimension) / height);
+          height = maxDimension;
+        }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        resolve(file);
+        return;
+      }
+      ctx.drawImage(img, 0, 0, width, height);
+      canvas.toBlob(
+        (blob) => {
+          if (!blob) {
+            resolve(file);
+            return;
+          }
+          const compressed = new File([blob], file.name.replace(/\.[^/.]+$/, '.jpg'), {
+            type: 'image/jpeg',
+            lastModified: Date.now(),
+          });
+          resolve(compressed);
+        },
+        'image/jpeg',
+        quality
+      );
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(file);
+    };
+  });
+}
+
 export function ReceiptUploadModal({ isOpen, onClose, currency }: ReceiptUploadModalProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -98,6 +151,9 @@ export function ReceiptUploadModal({ isOpen, onClose, currency }: ReceiptUploadM
     setErrorMsg(null);
 
     try {
+      setUploadProgress('Mengompresi foto nota agar ekstraksi kilat...');
+      const fileToUpload = await compressImageForOcr(selectedFile);
+
       const requestId = `req_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
       let success = false;
 
@@ -111,9 +167,9 @@ export function ReceiptUploadModal({ isOpen, onClose, currency }: ReceiptUploadM
             'X-Idempotency-Key': requestId,
           },
           body: JSON.stringify({
-            mime_type: selectedFile.type || 'image/webp',
-            file_size: selectedFile.size,
-            filename: selectedFile.name,
+            mime_type: fileToUpload.type || 'image/jpeg',
+            file_size: fileToUpload.size,
+            filename: fileToUpload.name,
             request_id: requestId,
           }),
         });
@@ -124,8 +180,8 @@ export function ReceiptUploadModal({ isOpen, onClose, currency }: ReceiptUploadM
           setUploadProgress('Mengupload foto nota ke storage...');
           const uploadRes = await fetch(presigned_url, {
             method: 'PUT',
-            body: selectedFile,
-            headers: { 'Content-Type': selectedFile.type || 'image/webp' },
+            body: fileToUpload,
+            headers: { 'Content-Type': fileToUpload.type || 'image/jpeg' },
           });
 
           if (uploadRes.ok) {
@@ -155,7 +211,7 @@ export function ReceiptUploadModal({ isOpen, onClose, currency }: ReceiptUploadM
       if (!success) {
         setUploadProgress('Mengunggah nota via server...');
         const formData = new FormData();
-        formData.append('file', selectedFile);
+        formData.append('file', fileToUpload);
 
         const res = await fetch('/api/receipts/process', {
           method: 'POST',
