@@ -48,24 +48,16 @@ export async function extractReceipt(
   const base64Image = imageBuffer.toString('base64');
   const imageUrl = `data:${mimeType};base64,${base64Image}`;
 
-  const prompt = `Kamu adalah parser struk belanja (receipt scanner) untuk asisten keuangan pribadi.
-Tugasmu: analisis gambar yang diunggah.
+  const prompt = `Kamu adalah OCR parser struk belanja (receipt scanner) otomatis untuk pencatatan keuangan.
+Tugasmu: Analisis foto ini dan ekstrak data transaksi belanja ke format JSON.
 
-Langkah 1: Periksa apakah gambar ini ADALAH STRUK/NOTA BELANJA YANG VALID (terdapat rincian transaksi/pembelian/toko).
-- Jika BUKAN struk/nota belanja (misal: foto orang, hewan, barang acak, pemandangan, dokumen lain):
-  Kembalikan JSON persis seperti berikut:
-  {
-    "is_receipt": false,
-    "error_reason": "Gambar yang diunggah bukan merupakan foto nota atau struk belanja."
-  }
-
-- Jika BENAR merupakan struk/nota belanja:
-  Set "is_receipt": true dan ekstrak data berikut:
-  1. "merchant": Nama toko/merchant (misal: Indomaret, Alfamart, Tokopedia). Jika tidak jelas, kembalikan null.
-  2. "total": Total belanja akhir setelah diskon/pajak dalam angka bulat positif (misal: 150000).
-  3. "tanggal": Tanggal transaksi YYYY-MM-DD. Gunakan ${today} jika tidak tertera.
-  4. "kategori_saran": Pilih SATU dari daftar kategori: ${options.categories.join(', ')}.
-  5. "items": Array item belanja: [{ "name": "Susu", "qty": 1, "price": 15000 }].
+Aturan Penting:
+1. Anggap gambar sebagai NOTA/STRUK BELANJA jika terdapat nama toko, daftar barang, atau nominal total pembayaran.
+2. "merchant": Nama toko/merchant (misal: Indomaret, Alfamart, Tokopedia, Warung). Jika tidak jelas, gunakan "Struk Belanja".
+3. "total": Total belanja akhir dalam angka bulat (misal: 45000). Jika tidak tertera, hitung dari jumlah harga barang.
+4. "tanggal": Tanggal transaksi YYYY-MM-DD. Gunakan ${today} jika tidak tertera di nota.
+5. "kategori_saran": Pilih SATU dari daftar kategori: ${options.categories.join(', ')}.
+6. "items": Array item belanja: [{ "name": "Nama Barang", "qty": 1, "price": 15000 }]. Jika tidak ada rincian item, isi array kosong [].
 
 Format output JSON valid (tanpa pembungkus markdown):
 {
@@ -93,7 +85,6 @@ Format output JSON valid (tanpa pembungkus markdown):
         },
       ],
       temperature: 0.1,
-      response_format: { type: 'json_object' },
     });
 
     const content = response.choices[0]?.message?.content?.trim();
@@ -125,17 +116,31 @@ Format output JSON valid (tanpa pembungkus markdown):
       throw new Error('Gambar yang diunggah tidak dapat diekstraksi. Mohon pastikan foto nota terlihat jelas dan dapat dibaca.');
     }
 
-    // Check if AI explicitly marked it as non-receipt
-    if (json.is_receipt === false) {
+    // Check if AI explicitly marked it as non-receipt AND total is missing
+    if (json.is_receipt === false && !json.total && (!json.items || json.items.length === 0)) {
       throw new Error('Gambar yang diunggah bukan merupakan foto nota atau struk belanja yang valid. Mohon scan nota fisik asli.');
     }
+
+    // Default values if missing
+    if (!json.total && json.items && json.items.length > 0) {
+      json.total = json.items.reduce((acc: number, item: any) => acc + (Number(item.price) || 0) * (Number(item.qty) || 1), 0);
+    }
+    if (!json.is_receipt) json.is_receipt = true;
+    if (!json.tanggal) json.tanggal = today;
+    if (!json.kategori_saran) json.kategori_saran = options.categories[0] || 'Belanja';
 
     // Validate schema
     return OcrResultSchema.parse(json);
 
-  } catch (error) {
+  } catch (error: any) {
     if (error instanceof z.ZodError) {
-      throw new Error('Gambar yang diunggah tidak terdeteksi sebagai nota/struk belanja. Mohon pastikan foto nota terlihat jelas dan dapat dibaca.');
+      throw new Error('Format data nota dari AI tidak valid. Mohon pastikan foto nota terlihat jelas.');
+    }
+    if (error.message?.includes('402') || error.message?.includes('MONTHLY_REQUEST_COUNT') || error.message?.includes('limit')) {
+      throw new Error('Kuota bulanan API AI Router gratisan telah terlampaui (MONTHLY_REQUEST_COUNT Limit). Silakan gunakan API Key OpenAI/Gemini milik Anda di .env.local.');
+    }
+    if (error.message?.includes('401') || error.message?.includes('API key')) {
+      throw new Error('API Key AI Router tidak valid atau memerlukan otorisasi.');
     }
     throw error;
   }
