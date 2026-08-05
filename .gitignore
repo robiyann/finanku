@@ -1,8 +1,41 @@
+# dependencies
 node_modules
-.next
-.env.local
+.pnp
+.pnp.*
+
+# environment variables & secrets — JANGAN PERNAH COMMIT
 .env
-*.log
+.env.*
+.env.local
+.env.production
+.env.staging
+
+# session & state files yang berisi kredensial
+sessions.json
+
+# Next.js build output
+.next/
+out/
+build/
+
+# Test files & assets yang tidak perlu di repo
+nota-test.webp
+*.test.webp
+*.test.png
+
+# Misc
 .DS_Store
+*.pem
+Thumbs.db
+
+# Debug logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# TypeScript
+*.tsbuildinfo
+
+# Vercel
 .vercel
-next-env.d.ts
