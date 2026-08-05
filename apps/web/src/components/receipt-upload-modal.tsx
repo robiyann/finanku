@@ -99,84 +99,80 @@ export function ReceiptUploadModal({ isOpen, onClose, currency }: ReceiptUploadM
 
     try {
       const requestId = `req_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+      let success = false;
 
-      setUploadProgress('Mempersiapkan upload aman ke R2...');
-      const presignRes = await fetch('/api/receipts/presign', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Idempotency-Key': requestId,
-        },
-        body: JSON.stringify({
-          mime_type: selectedFile.type || 'image/webp',
-          file_size: selectedFile.size,
-          filename: selectedFile.name,
-          request_id: requestId,
-        }),
-      });
+      // Attempt Presigned R2 Upload first
+      try {
+        setUploadProgress('Mempersiapkan upload aman ke R2...');
+        const presignRes = await fetch('/api/receipts/presign', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Idempotency-Key': requestId,
+          },
+          body: JSON.stringify({
+            mime_type: selectedFile.type || 'image/webp',
+            file_size: selectedFile.size,
+            filename: selectedFile.name,
+            request_id: requestId,
+          }),
+        });
 
-      if (!presignRes.ok) {
-        const presignErr = await presignRes.json();
-        throw new Error(presignErr.error || 'Gagal mendapatkan URL upload.');
-      }
+        if (presignRes.ok) {
+          const { presigned_url, storage_path, receipt_id } = await presignRes.json();
 
-      const { presigned_url, storage_path, receipt_id } = await presignRes.json();
-
-      setUploadProgress('Mengupload foto nota ke storage...');
-      const uploadRes = await fetch(presigned_url, {
-        method: 'PUT',
-        body: selectedFile,
-        headers: { 'Content-Type': selectedFile.type || 'image/webp' },
-      });
-
-      if (!uploadRes.ok) {
-        throw new Error(`Gagal mengupload file ke storage (Status: ${uploadRes.status}).`);
-      }
-
-      setUploadProgress('Sistem OCR Cerdas sedang menganalisis nota...');
-      const processRes = await fetch('/api/receipts/process', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ storage_path, receipt_id }),
-      });
-
-      const json = await processRes.json();
-
-      if (!processRes.ok || !json.ok) {
-        throw new Error(json.error || 'Gagal memproses nota struk.');
-      }
-
-      setScanning(false);
-      setUploadProgress('');
-      setScannedResult(json.data);
-
-    } catch (err: any) {
-      if (err.message?.includes('URL upload') || err.message?.includes('CORS')) {
-        try {
-          setUploadProgress('Menggunakan mode upload langsung...');
-          const formData = new FormData();
-          formData.append('file', selectedFile);
-
-          const res = await fetch('/api/receipts/process', {
-            method: 'POST',
-            body: formData,
+          setUploadProgress('Mengupload foto nota ke storage...');
+          const uploadRes = await fetch(presigned_url, {
+            method: 'PUT',
+            body: selectedFile,
+            headers: { 'Content-Type': selectedFile.type || 'image/webp' },
           });
 
-          const json = await res.json();
+          if (uploadRes.ok) {
+            setUploadProgress('Sistem OCR Cerdas sedang menganalisis nota...');
+            const processRes = await fetch('/api/receipts/process', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ storage_path, receipt_id }),
+            });
 
-          if (!res.ok || !json.ok) {
-            throw new Error(json.error || 'Gagal memproses nota struk.');
+            const json = await processRes.json();
+            if (processRes.ok && json.ok) {
+              setScanning(false);
+              setUploadProgress('');
+              setScannedResult(json.data);
+              success = true;
+            } else {
+              throw new Error(json.error || 'Gagal memproses nota struk.');
+            }
           }
-
-          setScanning(false);
-          setUploadProgress('');
-          setScannedResult(json.data);
-          return;
-        } catch (fallbackErr: any) {
-          setErrorMsg(fallbackErr.message || 'Terjadi kesalahan saat memproses OCR.');
         }
+      } catch (presignErr: any) {
+        console.warn('[OCR Modal] Presigned upload failed/CORS error, switching to direct upload:', presignErr);
       }
 
+      // Direct Upload Fallback if presigned path failed or had CORS issue
+      if (!success) {
+        setUploadProgress('Mengunggah nota via server...');
+        const formData = new FormData();
+        formData.append('file', selectedFile);
+
+        const res = await fetch('/api/receipts/process', {
+          method: 'POST',
+          body: formData,
+        });
+
+        const json = await res.json();
+
+        if (!res.ok || !json.ok) {
+          throw new Error(json.error || 'Gagal memproses nota struk.');
+        }
+
+        setScanning(false);
+        setUploadProgress('');
+        setScannedResult(json.data);
+      }
+    } catch (err: any) {
       setScanning(false);
       setUploadProgress('');
       setErrorMsg(err.message || 'Terjadi kesalahan saat memproses OCR.');
