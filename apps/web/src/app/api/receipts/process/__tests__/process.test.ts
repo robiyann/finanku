@@ -63,7 +63,7 @@ describe('POST /api/receipts/process', () => {
         'content-type': 'application/json',
       },
       body: JSON.stringify({
-        storage_path: 'test-user-uuid/receipt-file.webp',
+        storage_path: 'receipts/test-user-uuid/receipt-file.webp',
       }),
     });
 
