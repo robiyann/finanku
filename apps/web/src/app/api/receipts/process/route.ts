@@ -165,11 +165,12 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 3. Run OCR with Gemini Vision
+    // 3. Run OCR with Gemini Vision (automatic 2x retry)
     try {
       const ocrResult = await extractReceipt(buffer, mimeType, {
         categories: catNames,
         today: new Date().toISOString().split('T')[0],
+        maxRetries: 2,
       });
 
       // 4. Update receipt status to 'parsed' in Neon DB
@@ -210,9 +211,13 @@ export async function POST(req: NextRequest) {
         `;
       } catch { /* Ignore */ }
 
-      console.error('[Process] OCR error:', ocrError.message);
+      console.error('[Process] OCR error after retries:', ocrError.message);
       return NextResponse.json(
-        { ok: false, error: 'Gagal memproses OCR nota. Pastikan gambar jelas dan coba lagi.' },
+        {
+          ok: false,
+          error: ocrError.message || 'Gagal memproses OCR nota setelah 2x percobaan. Pastikan foto nota terlihat jelas dan coba lagi.',
+          attempts: 2,
+        },
         { status: 500 }
       );
     }

@@ -24,6 +24,7 @@ export interface OcrOptions {
   baseUrl?: string;
   apiKey?: string;
   model?: string;
+  maxRetries?: number;
 }
 
 export async function extractReceipt(
@@ -35,6 +36,7 @@ export async function extractReceipt(
   const apiKey = options.apiKey || process.env.AI_API_KEY || process.env.OPENAI_API_KEY;
   const model = options.model || process.env.AI_MODEL || process.env.OPENAI_MODEL || 'gemini-2.5-flash';
   const today = options.today || new Date().toISOString().split('T')[0];
+  const maxRetries = options.maxRetries ?? 2;
 
   if (!apiKey) {
     throw new Error('API key untuk AI router tidak ditemukan. Setel AI_API_KEY atau OPENAI_API_KEY.');
@@ -69,79 +71,93 @@ Format output JSON valid (tanpa pembungkus markdown):
   "items": [{ "name": "Item A", "qty": 1, "price": 50000 }]
 }`;
 
-  try {
-    const response = await client.chat.completions.create({
-      model: model,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            { type: 'text', text: prompt },
-            {
-              type: 'image_url',
-              image_url: { url: imageUrl },
-            },
-          ],
-        },
-      ],
-      temperature: 0.1,
-    });
+  let lastError: Error | null = null;
 
-    const content = response.choices[0]?.message?.content?.trim();
-    if (!content) {
-      throw new Error('AI Vision mengembalikan respon kosong.');
-    }
-
-    let json: any;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      json = JSON.parse(content);
-    } catch {
-      const codeBlockMatch = content.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
-      if (codeBlockMatch && codeBlockMatch[1]) {
-        try {
-          json = JSON.parse(codeBlockMatch[1].trim());
-        } catch {}
+      const response = await client.chat.completions.create({
+        model: model,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: prompt },
+              {
+                type: 'image_url',
+                image_url: { url: imageUrl },
+              },
+            ],
+          },
+        ],
+        temperature: 0.1,
+      });
+
+      const content = response.choices[0]?.message?.content?.trim();
+      if (!content) {
+        throw new Error('AI Vision mengembalikan respon kosong.');
       }
-      if (!json) {
-        const jsonObjectMatch = content.match(/\{[\s\S]*\}/);
-        if (jsonObjectMatch) {
+
+      let json: any;
+      try {
+        json = JSON.parse(content);
+      } catch {
+        const codeBlockMatch = content.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+        if (codeBlockMatch && codeBlockMatch[1]) {
           try {
-            json = JSON.parse(jsonObjectMatch[0].trim());
+            json = JSON.parse(codeBlockMatch[1].trim());
           } catch {}
         }
+        if (!json) {
+          const jsonObjectMatch = content.match(/\{[\s\S]*\}/);
+          if (jsonObjectMatch) {
+            try {
+              json = JSON.parse(jsonObjectMatch[0].trim());
+            } catch {}
+          }
+        }
+      }
+
+      if (!json) {
+        throw new Error('Gambar yang diunggah tidak dapat diekstraksi. Mohon pastikan foto nota terlihat jelas dan dapat dibaca.');
+      }
+
+      // Check if AI explicitly marked it as non-receipt AND total is missing
+      if (json.is_receipt === false && !json.total && (!json.items || json.items.length === 0)) {
+        throw new Error('Gambar yang diunggah bukan merupakan foto nota atau struk belanja yang valid. Mohon scan nota fisik asli.');
+      }
+
+      // Default values if missing
+      if (!json.total && json.items && json.items.length > 0) {
+        json.total = json.items.reduce((acc: number, item: any) => acc + (Number(item.price) || 0) * (Number(item.qty) || 1), 0);
+      }
+      if (!json.is_receipt) json.is_receipt = true;
+      if (!json.tanggal) json.tanggal = today;
+      if (!json.kategori_saran) json.kategori_saran = options.categories[0] || 'Belanja';
+
+      // Validate schema
+      return OcrResultSchema.parse(json);
+
+    } catch (error: any) {
+      if (error instanceof z.ZodError) {
+        lastError = new Error('Format data nota dari AI tidak valid. Mohon pastikan foto nota terlihat jelas.');
+      } else if (error.message?.includes('402') || error.message?.includes('MONTHLY_REQUEST_COUNT') || error.message?.includes('limit')) {
+        // Quota/limit errors shouldn't retry needlessly, fail immediately
+        throw new Error('Kuota bulanan API AI Router gratisan telah terlampaui (MONTHLY_REQUEST_COUNT Limit). Silakan gunakan API Key OpenAI/Gemini milik Anda di .env.local.');
+      } else if (error.message?.includes('401') || error.message?.includes('API key')) {
+        // Auth errors shouldn't retry
+        throw new Error('API Key AI Router tidak valid atau memerlukan otorisasi.');
+      } else {
+        lastError = error;
+      }
+
+      console.warn(`[OCR] Percobaan ke-${attempt} dari ${maxRetries} gagal: ${lastError?.message}`);
+
+      if (attempt < maxRetries) {
+        // Wait 500ms backoff before retrying next attempt
+        await new Promise((resolve) => setTimeout(resolve, 500));
       }
     }
-
-    if (!json) {
-      throw new Error('Gambar yang diunggah tidak dapat diekstraksi. Mohon pastikan foto nota terlihat jelas dan dapat dibaca.');
-    }
-
-    // Check if AI explicitly marked it as non-receipt AND total is missing
-    if (json.is_receipt === false && !json.total && (!json.items || json.items.length === 0)) {
-      throw new Error('Gambar yang diunggah bukan merupakan foto nota atau struk belanja yang valid. Mohon scan nota fisik asli.');
-    }
-
-    // Default values if missing
-    if (!json.total && json.items && json.items.length > 0) {
-      json.total = json.items.reduce((acc: number, item: any) => acc + (Number(item.price) || 0) * (Number(item.qty) || 1), 0);
-    }
-    if (!json.is_receipt) json.is_receipt = true;
-    if (!json.tanggal) json.tanggal = today;
-    if (!json.kategori_saran) json.kategori_saran = options.categories[0] || 'Belanja';
-
-    // Validate schema
-    return OcrResultSchema.parse(json);
-
-  } catch (error: any) {
-    if (error instanceof z.ZodError) {
-      throw new Error('Format data nota dari AI tidak valid. Mohon pastikan foto nota terlihat jelas.');
-    }
-    if (error.message?.includes('402') || error.message?.includes('MONTHLY_REQUEST_COUNT') || error.message?.includes('limit')) {
-      throw new Error('Kuota bulanan API AI Router gratisan telah terlampaui (MONTHLY_REQUEST_COUNT Limit). Silakan gunakan API Key OpenAI/Gemini milik Anda di .env.local.');
-    }
-    if (error.message?.includes('401') || error.message?.includes('API key')) {
-      throw new Error('API Key AI Router tidak valid atau memerlukan otorisasi.');
-    }
-    throw error;
   }
+
+  throw lastError || new Error(`Gagal mengekstrak data nota setelah ${maxRetries}x percobaan. Mohon pastikan foto nota terlihat jelas dan coba lagi.`);
 }

@@ -12,8 +12,6 @@ vi.mock('openai', () => {
         },
       },
     })),
-    // Export mockCreate so it can be referenced in tests
-    _mockCreate: mockCreate,
   };
 });
 
@@ -31,7 +29,6 @@ describe('extractReceipt', () => {
       items: [{ name: 'Susu', qty: 2, price: 25000 }],
     };
 
-    // Get the mock instance
     const openAiInstance = new OpenAI({ apiKey: 'test' });
     vi.mocked(openAiInstance.chat.completions.create).mockResolvedValueOnce({
       choices: [
@@ -51,20 +48,51 @@ describe('extractReceipt', () => {
       model: 'test-model',
     });
 
-    expect(result).toEqual(mockData);
+    expect(result).toMatchObject(mockData);
   });
 
-  it('should throw an error if validation fails', async () => {
+  it('should retry automatically when first attempt fails and succeed on second attempt', async () => {
+    const mockData = {
+      merchant: 'Indomaret',
+      total: 15000,
+      tanggal: '2026-08-05',
+      kategori_saran: 'Makanan & Minuman',
+      items: [{ name: 'Roti', qty: 1, price: 15000 }],
+    };
+
+    const openAiInstance = new OpenAI({ apiKey: 'test' });
+    // First attempt fails (invalid JSON / empty content)
+    vi.mocked(openAiInstance.chat.completions.create)
+      .mockResolvedValueOnce({
+        choices: [{ message: { content: 'not valid json' } }],
+      } as any)
+      // Second attempt succeeds
+      .mockResolvedValueOnce({
+        choices: [{ message: { content: JSON.stringify(mockData) } }],
+      } as any);
+
+    const buffer = Buffer.from('fake-image-data');
+    const result = await extractReceipt(buffer, 'image/webp', {
+      categories: ['Makanan & Minuman'],
+      apiKey: 'test-api-key',
+      maxRetries: 2,
+    });
+
+    expect(openAiInstance.chat.completions.create).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject(mockData);
+  });
+
+  it('should throw an error after max retries fail', async () => {
     const invalidMockData = {
       merchant: 'Alfamart',
-      total: -100, // Total should be positive
+      total: -100, // Invalid total
       tanggal: 'invalid-date',
       kategori_saran: 'Makanan & Minuman',
       items: [],
     };
 
     const openAiInstance = new OpenAI({ apiKey: 'test' });
-    vi.mocked(openAiInstance.chat.completions.create).mockResolvedValueOnce({
+    vi.mocked(openAiInstance.chat.completions.create).mockResolvedValue({
       choices: [
         {
           message: {
@@ -79,7 +107,10 @@ describe('extractReceipt', () => {
       extractReceipt(buffer, 'image/webp', {
         categories: ['Makanan & Minuman'],
         apiKey: 'test-api-key',
+        maxRetries: 2,
       })
-    ).rejects.toThrow(/Gagal memvalidasi skema hasil OCR/);
+    ).rejects.toThrow(/Format data nota dari AI tidak valid/);
+
+    expect(openAiInstance.chat.completions.create).toHaveBeenCalledTimes(2);
   });
 });

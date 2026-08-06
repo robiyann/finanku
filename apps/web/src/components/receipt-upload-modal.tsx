@@ -349,12 +349,31 @@ export function ReceiptUploadModal({ isOpen, onClose, currency }: ReceiptUploadM
         {authChecked && currentUser && (
           <>
             {errorMsg && (
-              <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs flex items-start gap-2.5">
-                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                <div className="space-y-1">
-                  <p className="font-semibold">Peringatan OCR</p>
-                  <p className="text-[11px] opacity-90">{errorMsg}</p>
+              <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs flex flex-col gap-2.5">
+                <div className="flex items-start gap-2.5">
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <div className="space-y-1">
+                    <p className="font-semibold">Scan OCR Gagal (2x Percobaan)</p>
+                    <p className="text-[11px] opacity-90">{errorMsg}</p>
+                  </div>
                 </div>
+                {selectedFile && !scanning && (
+                  <div className="flex items-center gap-2 pt-1 border-t border-rose-500/20">
+                    <button
+                      onClick={handleScan}
+                      className="flex-1 py-1.5 px-3 rounded-lg bg-rose-600/30 hover:bg-rose-600/50 text-rose-200 text-[11px] font-bold flex items-center justify-center gap-1.5 transition-all"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                      Coba Scan Ulang
+                    </button>
+                    <button
+                      onClick={handleReset}
+                      className="py-1.5 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-medium transition-all"
+                    >
+                      Upload Foto Lain
+                    </button>
+                  </div>
+                )}
               </div>
             )}
 
